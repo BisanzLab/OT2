@@ -1,0 +1,178 @@
+from opentrons import protocol_api
+
+# metadata
+metadata = {
+	'protocolName': 'Gnotobiotics 16S qPCR Testing', 
+	'author': 'J Bisanz, jordan.bisanz@gmail.com',
+	'description': 'Protocol for qPCR testing for bacterial contamination in germ-free mice via qPCR for total 16S rRNA copies. Does Zymo mag washes and loads 16S rRNA qPCR assay. Note: Assumes 8 samples in first column of plate. Extraction volumes have been scaled by a factor of 5 to reduce reagent use and speed up extraction',
+	'apiLevel': '2.7'
+}
+
+def run(protocol: protocol_api.ProtocolContext):
+
+	# which steps should be run?
+	AddBindingBuffer = True
+	AddBeads = True
+	CaptureBinding = True
+	Wash1 = True
+	Wash2 = True 
+	LoadPlate = True
+	Dry = True
+	Elute = True
+	AddTemplate = True
+
+
+	# set tweakable variables
+	set_rail_lights = True
+	volume_magbeads = 5 # volume of mag beads (25ul originally)
+	volume_bindingbuffer = 120 # binding buffer (600 originally)
+	volume_wb1 = 180 # volume of wash buffer 1
+	volume_wb2 = 180 # volume of wash buffer 2
+	volume_h20 = 50 # volume of water
+	volume_elution = 20 # elution volume to transfer to clean wells (defaults)
+	wells = ['A1', 'B1', 'C1', 'D1', 'E1', 'F1', 'G1', 'H1'] # samples with wells
+	
+	capture_depth = 1 # depth below ideal bottom of plate to remove supernatants
+	capture_min = 2 # number of minutes to capture beads on magnets
+	nmix = 5 # number of times to pipette to mix
+	drying_min = 13 # number of extra minutes to dry DNA after STD is made
+	trash_speed = 1 # the relative speed to discard of liquids into trash, this is an integer multiplier of normal speed, set higher to clear bubbles on outside of tip
+	elution_speed = 0.2 # relative speed to lift supernatant off beads
+
+	# define deck layout
+	MagModule = protocol.load_module('magnetic module gen2', 1)
+	BindingPlate = MagModule.load_labware('biorad_96_wellplate_200ul_pcr') # use the full skirted biorad plate and make sure your samples are in the first 2 columns. Sample volume should be 40ul
+	Reagents = protocol.load_labware("opentrons_24_tuberack_eppendorf_1.5ml_safelock_snapcap", 2) #a 1.5mL eppendorf in A1 containing 150 µL of mastermix and 30ul of 10X primer solution
+	
+	#A1 is 1.5mL binding buffer
+	#A2 is 100 ul beads
+	#A3 us 1.5mL WB1
+	#A4 is 150ul mm + 30 ul 10x primer mix
+	#A5 is 1mL H2O
+	#B1 is 1.5mL WB2 this might be a little short on the 8th well and please keep an eye on the surface level
+	#B2 is 1.5mL WB2 this might be a little short on the 8th well and please keep an eye on the surface level
+
+
+	
+	qPCR = protocol.load_labware('biorad_384_wellplate_50ul', 3) # skirted 384 well plate for qPCR
+	waste = protocol.load_labware('agilent_1_reservoir_290ml', 4)
+	waste = waste['A1'].top(0)
+
+
+	
+	#define tips
+	tips_p200_1 = protocol.load_labware('opentrons_96_filtertiprack_200ul', 5)
+	tips_p200_2 = protocol.load_labware('opentrons_96_filtertiprack_200ul', 8)
+	tips_p20= protocol.load_labware('opentrons_96_filtertiprack_20ul', 6)
+
+
+
+	# define pipettes
+	p200 = protocol.load_instrument('p300_single_gen2', 'left', tip_racks=[tips_p200_1,tips_p200_2])
+	p20 = protocol.load_instrument('p20_single_gen2', 'right', tip_racks=[tips_p20])
+
+	### Prerun setup ########################################
+	MagModule.disengage()
+
+	if AddBindingBuffer:
+		protocol.comment('--------->Adding binding buffer')
+		for i in wells:
+			p200.pick_up_tip()
+			p200.aspirate(volume_bindingbuffer, Reagents['A1'])
+			p200.dispense(volume_bindingbuffer, BindingPlate[i])
+			p200.mix(nmix, volume_bindingbuffer, BindingPlate[i])
+			p200.drop_tip()
+		
+	if AddBeads:
+		protocol.comment('--------->Adding mag beads')
+		p200.pick_up_tip()
+		p200.mix(10, 30, Reagents['A2'].bottom(capture_depth))
+		p200.drop_tip()
+		
+		for i in wells:
+			p200.pick_up_tip()
+			p200.mix(5, 20, Reagents['A2'])
+			p200.aspirate(volume_magbeads, Reagents['A2'])
+			p200.dispense(volume_magbeads, BindingPlate[i])
+			p200.mix(10, 100, BindingPlate[i].bottom(capture_depth))
+			p200.drop_tip()
+		
+	if CaptureBinding:
+		protocol.comment('--------->Removing Binding Buffer')
+		MagModule.engage()
+		protocol.delay(minutes=capture_min)
+		for i in wells:
+			p200.pick_up_tip()
+			p200.aspirate(200, BindingPlate[i].bottom(capture_depth), rate=elution_speed)
+			p200.dispense(200, waste, rate = trash_speed)
+			p200.drop_tip()
+
+	if Wash1:
+		protocol.comment('--------->Doing Wash 1')
+		MagModule.disengage()
+		for i in wells:
+			p200.pick_up_tip()
+			p200.aspirate(volume_wb1, Reagents['A3'])
+			p200.dispense(volume_wb1, BindingPlate[i])
+			p200.mix(nmix, volume_wb1*0.5, BindingPlate[i])
+			p200.drop_tip()
+		MagModule.engage()
+		protocol.delay(minutes=capture_min)
+		for i in wells:
+			p200.pick_up_tip()
+			p200.aspirate(200, BindingPlate[i].bottom(capture_depth), rate=elution_speed)
+			p200.dispense(200, waste, rate = trash_speed)
+			p200.drop_tip()
+
+	if Wash2:
+		for r in [1,2]:
+			protocol.comment('--------->Doing Wash 2')
+			MagModule.disengage()
+			for i in wells:
+				p200.pick_up_tip()
+				p200.aspirate(volume_wb2, Reagents['B'+str(r)])
+				p200.dispense(volume_wb2, BindingPlate[i])
+				p200.mix(nmix, volume_wb2*0.5, BindingPlate[i])
+				p200.drop_tip()
+			MagModule.engage()
+			protocol.delay(minutes=capture_min)
+			for i in wells:
+				p200.pick_up_tip()
+				p200.aspirate(200, BindingPlate[i].bottom(capture_depth), rate=elution_speed)
+				p200.dispense(200, waste, rate = trash_speed)
+				p200.drop_tip()
+
+	if LoadPlate:
+		p20.pick_up_tip()
+		for row in [ 'A', 'B', 'C', 'D', 'E','F', 'G', 'H']:
+			p20.aspirate(18, Reagents['A4'])
+			p20.dispense(6, qPCR[row + str(1)])
+			p20.dispense(6, qPCR[row + str(2)])
+			p20.dispense(6, qPCR[row + str(3)])
+		p20.drop_tip()
+
+	if Dry:
+		protocol.comment('--------->Doing extra drying of DNA')
+		protocol.delay(minutes=drying_min)
+
+	if Elute:
+		protocol.comment('--------->Eluting DNA')
+		MagModule.disengage()
+		for i in wells:
+			p200.pick_up_tip()
+			p200.aspirate(volume_h20, Reagents['A5'])
+			p200.dispense(volume_h20, BindingPlate[i])
+			p200.mix(nmix, volume_h20*0.5, BindingPlate[i])
+			p200.drop_tip()
+		MagModule.engage()
+		protocol.delay(minutes=capture_min)
+
+
+	if AddTemplate:
+		for row in [ 'A', 'B', 'C', 'D', 'E','F', 'G', 'H']:
+			p20.pick_up_tip()
+			p20.aspirate(15, BindingPlate[row+str(1)].bottom(capture_depth), rate=elution_speed)
+			p20.dispense(4, qPCR[row + str(1)])
+			p20.dispense(4, qPCR[row + str(2)])
+			p20.dispense(4, qPCR[row + str(3)])
+			p20.drop_tip()
